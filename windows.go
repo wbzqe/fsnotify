@@ -56,11 +56,11 @@ func (w *Watcher) Close() error {
 
 	// Send "quit" message to the reader goroutine
 	ch := make(chan error)
-	w.quit <- ch
+	w.quit <- ch //发送一个通道ch作为退出信号到退出通道，并用其接收关闭操作返回的信息
 	if err := w.wakeupReader(); err != nil {
 		return err
 	}
-	return <-ch
+	return <-ch //接收退出处理中返回的信息
 }
 
 // Add starts watching the named file or directory (non-recursively).
@@ -74,8 +74,8 @@ func (w *Watcher) Add(name string) error {
 		flags: sysFSALLEVENTS,
 		reply: make(chan error),
 	}
-	w.input <- in
-	if err := w.wakeupReader(); err != nil {
+	w.input <- in                            //发送需要监控的目录
+	if err := w.wakeupReader(); err != nil { //发送空数据到iocp，截取需要监控的目录
 		return err
 	}
 	return <-in.reply
@@ -88,8 +88,8 @@ func (w *Watcher) Remove(name string) error {
 		path:  filepath.Clean(name),
 		reply: make(chan error),
 	}
-	w.input <- in
-	if err := w.wakeupReader(); err != nil {
+	w.input <- in                            //发送需要移除的目录
+	if err := w.wakeupReader(); err != nil { //发送空数据到iocp，截取需要移除监控的目录
 		return err
 	}
 	return <-in.reply
@@ -174,6 +174,7 @@ type watch struct {
 type indexMap map[uint64]*watch
 type watchMap map[uint32]indexMap
 
+//手动向iocp发送空数据，在readEvents()截获空数据做下一步处理
 func (w *Watcher) wakeupReader() error {
 	e := syscall.PostQueuedCompletionStatus(w.port, 0, 0, nil)
 	if e != nil {
@@ -182,6 +183,7 @@ func (w *Watcher) wakeupReader() error {
 	return nil
 }
 
+//返回标准目录
 func getDir(pathname string) (dir string, err error) {
 	attr, e := syscall.GetFileAttributes(syscall.StringToUTF16Ptr(pathname))
 	if e != nil {
@@ -196,6 +198,7 @@ func getDir(pathname string) (dir string, err error) {
 	return
 }
 
+//获取目录的标识
 func getIno(path string) (ino *inode, err error) {
 	h, e := syscall.CreateFile(syscall.StringToUTF16Ptr(path),
 		syscall.FILE_LIST_DIRECTORY,
@@ -211,10 +214,10 @@ func getIno(path string) (ino *inode, err error) {
 		return nil, os.NewSyscallError("GetFileInformationByHandle", e)
 	}
 	ino = &inode{
-		handle: h,
-		volume: fi.VolumeSerialNumber,
-		index:  uint64(fi.FileIndexHigh)<<32 | uint64(fi.FileIndexLow),
-	}
+		handle: h,                                                      //目录句柄
+		volume: fi.VolumeSerialNumber,                                  //卷序列号
+		index:  uint64(fi.FileIndexHigh)<<32 | uint64(fi.FileIndexLow), //组装高位和低位索引
+	} //volume与index用来唯一标识文件
 	return ino, nil
 }
 
@@ -348,7 +351,7 @@ func (w *Watcher) startRead(watch *watch) error {
 		return nil
 	}
 	e := syscall.ReadDirectoryChanges(watch.ino.handle, &watch.buf[0],
-		uint32(unsafe.Sizeof(watch.buf)), false, mask, nil, &watch.ov, 0)
+		uint32(unsafe.Sizeof(watch.buf)), true, mask, nil, &watch.ov, 0)
 	if e != nil {
 		err := os.NewSyscallError("ReadDirectoryChanges", e)
 		if e == syscall.ERROR_ACCESS_DENIED && watch.mask&provisional == 0 {
@@ -380,10 +383,10 @@ func (w *Watcher) readEvents() {
 	for {
 		e := syscall.GetQueuedCompletionStatus(w.port, &n, &key, &ov, syscall.INFINITE)
 		watch := (*watch)(unsafe.Pointer(ov))
-
+		//如果数据为空
 		if watch == nil {
 			select {
-			case ch := <-w.quit:
+			case ch := <-w.quit: //收到退出信号，进行退出处理
 				w.mu.Lock()
 				var indexes []indexMap
 				for _, index := range w.watches {
@@ -402,14 +405,14 @@ func (w *Watcher) readEvents() {
 				}
 				close(w.Events)
 				close(w.Errors)
-				ch <- err
+				ch <- err //返回给Close()
 				return
-			case in := <-w.input:
+			case in := <-w.input: //
 				switch in.op {
 				case opAddWatch:
-					in.reply <- w.addWatch(in.path, uint64(in.flags))
+					in.reply <- w.addWatch(in.path, uint64(in.flags)) //添加一个目录的监控将消息返回给Add()
 				case opRemoveWatch:
-					in.reply <- w.remWatch(in.path)
+					in.reply <- w.remWatch(in.path) //移除目录监控将消息返回给Remove()
 				}
 			default:
 			}
