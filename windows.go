@@ -383,7 +383,7 @@ func (w *Watcher) readEvents() {
 	for {
 		e := syscall.GetQueuedCompletionStatus(w.port, &n, &key, &ov, syscall.INFINITE)
 		watch := (*watch)(unsafe.Pointer(ov))
-		//如果数据为空
+		//收到wakeupReader()发来的空数据
 		if watch == nil {
 			select {
 			case ch := <-w.quit: //收到退出信号，进行退出处理
@@ -418,7 +418,7 @@ func (w *Watcher) readEvents() {
 			}
 			continue
 		}
-
+		//处理iocp返回的错误
 		switch e {
 		case syscall.ERROR_MORE_DATA:
 			if watch == nil {
