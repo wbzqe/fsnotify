@@ -148,6 +148,7 @@ const (
 	provisional uint64 = 1 << (32 + iota)
 )
 
+//添加或删除某个目录时的传入结构
 type input struct {
 	op    int
 	path  string
@@ -155,12 +156,14 @@ type input struct {
 	reply chan error
 }
 
+//目录的inode信息
 type inode struct {
 	handle syscall.Handle
 	volume uint32
 	index  uint64
 }
 
+//监控的目录对象结构
 type watch struct {
 	ov     syscall.Overlapped
 	ino    *inode            // i-number
@@ -171,8 +174,9 @@ type watch struct {
 	buf    [4096]byte
 }
 
-type indexMap map[uint64]*watch
-type watchMap map[uint32]indexMap
+type indexMap map[uint64]*watch //ionde.index作为key
+
+type watchMap map[uint32]indexMap //ionde.volume作为key
 
 //手动向iocp发送空数据，在readEvents()截获空数据做下一步处理
 func (w *Watcher) wakeupReader() error {
@@ -183,7 +187,7 @@ func (w *Watcher) wakeupReader() error {
 	return nil
 }
 
-//返回标准目录
+//处理传入目录名称
 func getDir(pathname string) (dir string, err error) {
 	attr, e := syscall.GetFileAttributes(syscall.StringToUTF16Ptr(pathname))
 	if e != nil {
@@ -199,7 +203,7 @@ func getDir(pathname string) (dir string, err error) {
 }
 
 //获取目录的标识
-func getIno(path string) (ino *inode, err error) {
+func getIno(path string) (ino *inode, err error) { //获取目录的句柄，并设置共享属性
 	h, e := syscall.CreateFile(syscall.StringToUTF16Ptr(path),
 		syscall.FILE_LIST_DIRECTORY,
 		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE,
@@ -223,39 +227,39 @@ func getIno(path string) (ino *inode, err error) {
 
 // Must run within the I/O thread.
 func (m watchMap) get(ino *inode) *watch {
-	if i := m[ino.volume]; i != nil {
-		return i[ino.index]
+	if i := m[ino.volume]; i != nil { //检查watchMap是否已经存在这个卷序列号key
+		return i[ino.index] //如果这个volume下对应的index目录不存在的话就是nil
 	}
 	return nil
 }
 
 // Must run within the I/O thread.
 func (m watchMap) set(ino *inode, watch *watch) {
-	i := m[ino.volume]
+	i := m[ino.volume] //卷序列号对应的indexMap ，如果没有就为nil
 	if i == nil {
 		i = make(indexMap)
-		m[ino.volume] = i
+		m[ino.volume] = i //以这个卷序列号为key初始一个空的indexMap
 	}
-	i[ino.index] = watch
+	i[ino.index] = watch //向volume对应的indexMap中写入值
 }
 
 // Must run within the I/O thread.
 func (w *Watcher) addWatch(pathname string, flags uint64) error {
-	dir, err := getDir(pathname)
+	dir, err := getDir(pathname) //处理目录地址
 	if err != nil {
 		return err
 	}
 	if flags&sysFSONLYDIR != 0 && pathname != dir {
 		return nil
 	}
-	ino, err := getIno(dir)
+	ino, err := getIno(dir) //获取目录的inode结构信息
 	if err != nil {
 		return err
 	}
 	w.mu.Lock()
 	watchEntry := w.watches.get(ino)
 	w.mu.Unlock()
-	if watchEntry == nil {
+	if watchEntry == nil { //map里面不存在的话就把这个目录句柄绑定到iocp，并将目录信息加入到watchMap
 		if _, e := syscall.CreateIoCompletionPort(ino.handle, w.port, 0, 0); e != nil {
 			syscall.CloseHandle(ino.handle)
 			return os.NewSyscallError("CreateIoCompletionPort", e)
@@ -269,7 +273,7 @@ func (w *Watcher) addWatch(pathname string, flags uint64) error {
 		w.watches.set(ino, watchEntry)
 		w.mu.Unlock()
 		flags |= provisional
-	} else {
+	} else { //已经存在的话就关闭这个句柄
 		syscall.CloseHandle(ino.handle)
 	}
 	if pathname == dir {
@@ -365,6 +369,7 @@ func (w *Watcher) startRead(watch *watch) error {
 		}
 		w.deleteWatch(watch)
 		w.startRead(watch)
+		fmt.Println("test3")
 		return err
 	}
 	return nil
